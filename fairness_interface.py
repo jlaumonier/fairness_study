@@ -1,3 +1,5 @@
+import statistics
+import time
 import shap
 import numpy as np
 import pandas as pd
@@ -7,6 +9,8 @@ import streamlit as st
 import plotly.graph_objects as go
 
 from fairness_utils import FairnessUtils
+
+np.random.seed(int(time.time()))
 
 
 def create_dataframe(x, y_gold, base_columns, y_pred=None):
@@ -57,7 +61,7 @@ def recalculate_from_demographic_parity(df):
         for idx in random_df_t_1_condition.index:
             df.iloc[idx, df.columns.get_loc('target_pred')] = change_t[1]
 
-    st.text('Recalculate from demographic parity')
+    st.write('--- Recalculate from demographic parity ---')
     delta_dp = old_demographic_parity - wanted_demographic_parity
     delta_dp_f = delta_dp * correction_priority
     delta_dp_t = delta_dp * (1 - correction_priority)
@@ -84,23 +88,47 @@ def recalculate_from_demographic_parity(df):
     return df
 
 
-def create_accuracy_figure(data, metrics):
+def recalculate_from_demographic_parity_multiple(df, n=100):
+    all_df = []
+    for i in range(n):
+        temp_df = recalculate_from_demographic_parity(df)
+        all_df.append(temp_df.copy())
+    return all_df
+
+
+def calculate_metrics_and_errors(dfs, func_metrics):
+    metrics = []
+    for d in dfs:
+        m = func_metrics(d)
+        if m is not None:
+            metrics.append(m)
+    mean = statistics.mean(metrics)
+    std_error = statistics.pstdev(metrics)
+    conf_interval = 1.96 * std_error
+
+    return mean, std_error, conf_interval
+
+
+def calculate_accuracy(df):
+    return sklearn.metrics.accuracy_score(y_true=df['target'].tolist(),
+                                          y_pred=df['target_pred'].tolist())
+
+
+def create_figure(data, metrics):
     fig = go.Figure()
 
     # Add graph data
     olds = [d[0] for d in data]
     wanteds = [d[1] for d in data]
     news = [d[2] for d in data]
+    news_error = [d[3] for d in data]
 
     # Make traces for graph
     trace1 = go.Bar(x=metrics, y=olds, xaxis='x2', yaxis='y2',
-                    marker=dict(color='#0099ff'),
                     name='Before')
     trace2 = go.Bar(x=metrics, y=wanteds, xaxis='x2', yaxis='y2',
-                    marker=dict(color='#ff9900'),
                     name='Wanted')
-    trace3 = go.Bar(x=metrics, y=news, xaxis='x2', yaxis='y2',
-                    marker=dict(color='#404040'),
+    trace3 = go.Bar(x=metrics, y=news, error_y=dict(type='data', array=news_error), xaxis='x2', yaxis='y2',
                     name='After')
 
     # Add trace data to figure
@@ -174,29 +202,29 @@ correction_priority = st.slider('Priorize Non privilege', min_value=0.0, max_val
 #                                      value=old_equal_opportunity)
 
 st.subheader('Recalculate')
-data_df = recalculate_from_demographic_parity(data_df)
-new_demographic_parity = FairnessUtils.demographic_parity(data_df)
-new_disparate_impact = FairnessUtils.disparate_impact_rate(data_df)
-new_equal_opportunity_succ = FairnessUtils.equal_opportunity_succes(data_df)
-new_avg_equalized_odds = FairnessUtils.average_equalized_odds(data_df)
-new_predictive_rate_parity = FairnessUtils.predictive_rate_parity(data_df)
+with st.expander('Details'):
+    all_data_df = recalculate_from_demographic_parity_multiple(data_df)
+new_demographic_parity = calculate_metrics_and_errors(all_data_df, FairnessUtils.demographic_parity)
+new_disparate_impact = calculate_metrics_and_errors(all_data_df, FairnessUtils.disparate_impact_rate)
+new_equal_opportunity_succ = calculate_metrics_and_errors(all_data_df, FairnessUtils.equal_opportunity_succes)
+new_avg_equalized_odds = calculate_metrics_and_errors(all_data_df, FairnessUtils.average_equalized_odds)
+new_predictive_rate_parity = calculate_metrics_and_errors(all_data_df, FairnessUtils.predictive_rate_parity)
+accuracy_after = calculate_metrics_and_errors(all_data_df, calculate_accuracy)
 
-accuracy_after = sklearn.metrics.accuracy_score(y_true=data_df['target'].tolist(),
-                                                y_pred=data_df['target_pred'].tolist())
+data = [[accuracy_before, 1.0, accuracy_after[0], accuracy_after[2]],
+        [old_demographic_parity, wanted_demographic_parity, new_demographic_parity[0], new_demographic_parity[2]],
+        [old_equal_opportunity_succ, 0.0, new_equal_opportunity_succ[0], new_equal_opportunity_succ[2]],
+        [old_avg_equalized_odds, 0.0, new_avg_equalized_odds[0], new_avg_equalized_odds[2]],
+        [old_predictive_rate_parity, 0.0, new_predictive_rate_parity[0], new_predictive_rate_parity[2]]]
 
-data = [[accuracy_before, 1.0, accuracy_after],
-        [old_demographic_parity, wanted_demographic_parity, new_demographic_parity],
-        [old_equal_opportunity_succ, 0.0, new_equal_opportunity_succ],
-        [old_avg_equalized_odds, 0.0, new_avg_equalized_odds],
-        [old_predictive_rate_parity, 0.0, new_predictive_rate_parity]]
-fig_res = create_accuracy_figure(data=data, metrics=['Accuracy',
-                                                     'Demographic parity',
-                                                     'Equal Opportunity (succes)',
-                                                     'Avg Equalized Odds',
-                                                     'Predictive rate parity'])
+fig_res = create_figure(data=data, metrics=['Accuracy',
+                                            'Demographic parity',
+                                            'Equal Opportunity (succes)',
+                                            'Avg Equalized Odds',
+                                            'Predictive rate parity'])
 
-data = [[old_disparate_impact, 1.0, new_disparate_impact]]
-fig_ratio = create_accuracy_figure(data=data, metrics=['Disparate Impact'])
+data = [[old_disparate_impact, 1.0, new_disparate_impact[0], new_disparate_impact[2]]]
+fig_ratio = create_figure(data=data, metrics=['Disparate Impact'])
 
 st.header('Results')
 st.write('Demographic parity on gold :', gold_demographic_parity)
@@ -207,4 +235,3 @@ st.write('Avg Equalized Odds:', new_avg_equalized_odds)
 st.write('Predictive rate parity', new_predictive_rate_parity)
 st.plotly_chart(fig_res, use_container_width=True)
 st.plotly_chart(fig_ratio, use_container_width=True)
-
