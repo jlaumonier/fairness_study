@@ -13,6 +13,8 @@ from fairness_utils import FairnessUtils
 np.random.seed(int(time.time()))
 
 
+# https://machinesgonewrong.com/fairness/
+
 def create_dataframe(x, y_gold, base_columns, y_pred=None):
     if y_pred is not None:
         data_array = np.concatenate((x, np.array([y_gold]).T, np.array([y_pred]).T), axis=1)
@@ -38,7 +40,7 @@ def recalculate_from_demographic_parity(df):
         nb_priv_false = len(df[df['priv_class'] == False])
         # change F
         diff_nb_f = delta * nb_priv_false
-        int_diff_nb_f = int(diff_nb_f)
+        int_diff_nb_f = round(diff_nb_f)
         df_f_condition = df[(df['target_pred'] == change_f[0]) & (df['priv_class'] == False)]
         nb_f = min(abs(int_diff_nb_f), len(df_f_condition))
         st.text('  F ' + str(change_f[0]) + ' -> ' + str(change_f[1]) + ' to change ' + str(nb_f) + '/' + str(
@@ -53,7 +55,7 @@ def recalculate_from_demographic_parity(df):
         # change T
         diff_nb_t = - delta * nb_priv_true
         df_t_condition = df[(df['target_pred'] == change_t[0]) & (df['priv_class'] == True)]
-        int_diff_t = int(diff_nb_t)
+        int_diff_t = round(diff_nb_t)
         nb_t = min(abs(int_diff_t), len(df_t_condition))
         st.text('  T ' + str(change_t[0]) + ' -> ' + str(change_t[1]) + ' to change ' + str(nb_t) + '/' + str(
             len(df_t_condition)))
@@ -84,15 +86,16 @@ def recalculate_from_demographic_parity(df):
     new_dp = FairnessUtils.demographic_parity(df)
     delta_dp = new_dp - wanted_demographic_parity
     st.text('  After change T, diff ' + str(delta_dp))
+    st.dataframe(df)
 
     return df
 
 
-def recalculate_from_demographic_parity_multiple(df, n=100):
+def recalculate_from_demographic_parity_multiple(df, n=1):
     all_df = []
     for i in range(n):
-        temp_df = recalculate_from_demographic_parity(df)
-        all_df.append(temp_df.copy())
+        temp_df = recalculate_from_demographic_parity(df.copy())
+        all_df.append(temp_df)
     return all_df
 
 
@@ -102,9 +105,13 @@ def calculate_metrics_and_errors(dfs, func_metrics):
         m = func_metrics(d)
         if m is not None:
             metrics.append(m)
-    mean = statistics.mean(metrics)
-    std_error = statistics.pstdev(metrics)
-    conf_interval = 1.96 * std_error
+    mean = None
+    std_error = None
+    conf_interval = None
+    if len(metrics) > 0:
+        mean = statistics.mean(metrics)
+        std_error = statistics.pstdev(metrics)
+        conf_interval = 1.96 * std_error
 
     return mean, std_error, conf_interval
 
@@ -136,9 +143,68 @@ def create_figure(data, metrics):
     return fig
 
 
-x, y = shap.datasets.adult()
-x_display, y_display = shap.datasets.adult(display=True)
-x_train, x_valid, y_train, y_valid = sklearn.model_selection.train_test_split(x, y, test_size=0.2, random_state=7)
+def encode_categories_to_num(df):
+    category_columns = list(df.select_dtypes(include=['object']).columns)
+    oe = sklearn.preprocessing.OrdinalEncoder()
+    df[category_columns] = oe.fit_transform(df[category_columns])
+    return df
+
+
+def load_data_set(name):
+    x_d, y_d, cond_value = None, None, None
+    if name == 'Adult':
+        x_d, y_d = shap.datasets.adult(display=True)
+        cond_value = "x>40"
+    if name == 'CatDog':
+        df = pd.read_csv('artificial.csv', sep=';')
+        x_d = df.loc[:, ~df.columns.isin(['target'])]
+        y_d = df['target']
+        cond_value = "x=='Cat'"
+    return x_d, y_d, cond_value
+
+
+def conf_matrices(df):
+    all_matrix = sklearn.metrics.confusion_matrix(y_true=df['target'].to_numpy(),
+                                                  y_pred=df['target_pred'].to_numpy())
+    df_t_condition = df[(df['priv_class'] == True)]
+    priv_t_matrix = sklearn.metrics.confusion_matrix(y_true=df_t_condition['target'].to_numpy(),
+                                                     y_pred=df_t_condition['target_pred'].to_numpy())
+    df_f_condition = df[(df['priv_class'] == False)]
+    priv_f_matrix = sklearn.metrics.confusion_matrix(y_true=df_f_condition['target'].to_numpy(),
+                                                     y_pred=df_f_condition['target_pred'].to_numpy())
+    return all_matrix, priv_t_matrix, priv_f_matrix
+
+
+dataset = st.selectbox('Dataset',
+                       ['Adult', 'CatDog'],
+                       index=0)
+x_display, y_display, default_cond_value = load_data_set(dataset)
+
+data_df_display = create_dataframe(x_display, y_display, x_display.columns)
+labels = data_df_display['target'].unique()
+
+# strip spaces
+data_df_display = data_df_display.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+
+privilege_col = st.selectbox('discrimination column',
+                             list(x_display.columns),
+                             index=0)
+condition_str = st.text_input('condition for privilege class', value=default_cond_value)
+
+if condition_str is not None:
+    data_df_display = add_priv_class_col(data_df_display, privilege_col, condition_str)
+
+st.dataframe(data_df_display)
+
+encoded_data_df = encode_categories_to_num(data_df_display).copy()
+
+x = encoded_data_df.loc[:, ~encoded_data_df.columns.isin(['target', 'priv_class'])].to_numpy()
+priv_class = encoded_data_df['priv_class'].to_numpy()
+y = encoded_data_df['target'].to_numpy()
+x_train, x_valid, \
+y_train, y_valid, \
+priv_class_train, priv_class_valid = sklearn.model_selection.train_test_split(x, y, priv_class,
+                                                                              test_size=0.2, random_state=7)
 
 prediction = st.selectbox('Prediction',
                           ['Gold', 'KNN', 'AdaBoost', 'SVM'],
@@ -159,24 +225,15 @@ else:
     y_prediction = y_valid.copy()
     y_prediction_all = y.copy()
 
-data_df_display = create_dataframe(x_display, y_display, x_display.columns)
-st.dataframe(data_df_display)
-
-fairness_mesured_set = st.selectbox('Fairness mesured set', ['All', 'Valid'], index=1)
+fairness_mesured_set = st.selectbox('Fairness mesured set', ['All', 'Valid'], index=0)
 
 data_df = None
 if fairness_mesured_set == 'All':
     data_df = create_dataframe(x=x, y_gold=y, base_columns=x_display.columns, y_pred=y_prediction_all)
+    data_df['priv_class'] = priv_class
 if fairness_mesured_set == 'Valid':
     data_df = create_dataframe(x=x_valid, y_gold=y_valid, base_columns=x_display.columns, y_pred=y_prediction)
-
-privilege_col = st.selectbox('discrimination column',
-                             list(x_display.columns),
-                             index=7)
-condition_str = st.text_input('condition for privilege class', value='x==1')
-
-if condition_str is not None:
-    data_df = add_priv_class_col(data_df, privilege_col, condition_str)
+    data_df['priv_class'] = priv_class_valid
 
 st.dataframe(data_df)
 
@@ -204,6 +261,22 @@ correction_priority = st.slider('Priorize Non privilege', min_value=0.0, max_val
 st.subheader('Recalculate')
 with st.expander('Details'):
     all_data_df = recalculate_from_demographic_parity_multiple(data_df)
+
+st.subheader('Confusion Matrices')
+matrices = conf_matrices(all_data_df[0])
+with st.expander('All confusion matrix'):
+    disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[0], display_labels=labels)
+    disp.plot()
+    st.pyplot(disp.figure_)
+with st.expander('Priv True matrix'):
+    disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[1], display_labels=labels)
+    disp.plot()
+    st.pyplot(disp.figure_)
+with st.expander('Priv False matrix'):
+    disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[2], display_labels=labels)
+    disp.plot()
+    st.pyplot(disp.figure_)
+
 new_demographic_parity = calculate_metrics_and_errors(all_data_df, FairnessUtils.demographic_parity)
 new_disparate_impact = calculate_metrics_and_errors(all_data_df, FairnessUtils.disparate_impact_rate)
 new_equal_opportunity_succ = calculate_metrics_and_errors(all_data_df, FairnessUtils.equal_opportunity_succes)
