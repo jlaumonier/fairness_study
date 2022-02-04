@@ -151,16 +151,18 @@ def encode_categories_to_num(df):
 
 
 def load_data_set(name):
-    x_d, y_d, cond_value = None, None, None
+    x_d, y_d = None, None
     if name == 'Adult':
         x_d, y_d = shap.datasets.adult(display=True)
-        cond_value = "x>40"
     if name == 'CatDog':
         df = pd.read_csv('artificial.csv', sep=';')
         x_d = df.loc[:, ~df.columns.isin(['target'])]
         y_d = df['target']
-        cond_value = "x=='Cat'"
-    return x_d, y_d, cond_value
+    if name == 'Compas':
+        df = pd.read_csv('compas-scores-two-years.csv', sep=',')
+        x_d = df.loc[:, ~df.columns.isin(['score_text'])]
+        y_d = df['score_text']
+    return x_d, y_d
 
 
 def conf_matrices(df):
@@ -175,92 +177,134 @@ def conf_matrices(df):
     return all_matrix, priv_t_matrix, priv_f_matrix
 
 
-dataset = st.selectbox('Dataset',
-                       ['Adult', 'CatDog'],
-                       index=0)
-x_display, y_display, default_cond_value = load_data_set(dataset)
+def condition_operators(df, column):
+    result = ["=="]
+    if (str(df[column].dtype) == 'int32') or (str(df[column].dtype) == 'int64') \
+            or (str(df[column].dtype) == 'float32') or (str(df[column].dtype) == 'float64'):
+        result.append('<')
+        result.append('<=')
+        result.append('>')
+        result.append('>=')
+    return result
 
-data_df_display = create_dataframe(x_display, y_display, x_display.columns)
-labels = data_df_display['target'].unique()
 
-# strip spaces
-data_df_display = data_df_display.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+def condition_values(df, column):
+    result = []
+    if str(df[column].dtype) == 'object' or str(df[column].dtype) == 'category':
+        result.extend(['"' + sub + '"' for sub in df[column].unique()])
+    return result
 
-privilege_col = st.selectbox('discrimination column',
-                             list(x_display.columns),
-                             index=0)
-condition_str = st.text_input('condition for privilege class', value=default_cond_value)
 
-if condition_str is not None:
-    data_df_display = add_priv_class_col(data_df_display, privilege_col, condition_str)
+st.markdown(f'''
+    <style>
+        section[data-testid="stSidebar"] .css-ng1t4o {{width: 60rem;}}
+        section[data-testid="stSidebar"] .css-1d391kg {{width: 60rem;}}
+    </style>
+''', unsafe_allow_html=True)
 
-st.dataframe(data_df_display)
+with st.sidebar:
+    dataset = st.selectbox('Dataset',
+                           ['Adult', 'CatDog', 'Compas'],
+                           index=0)
+    x_display, y_display = load_data_set(dataset)
 
-encoded_data_df = encode_categories_to_num(data_df_display).copy()
+    data_df_display = create_dataframe(x_display, y_display, x_display.columns)
+    labels = data_df_display['target'].unique()
+    # strip spaces
+    data_df_display = data_df_display.applymap(lambda x: x.strip() if isinstance(x, str) else x)
 
-x = encoded_data_df.loc[:, ~encoded_data_df.columns.isin(['target', 'priv_class'])].to_numpy()
-priv_class = encoded_data_df['priv_class'].to_numpy()
-y = encoded_data_df['target'].to_numpy()
-x_train, x_valid, \
-y_train, y_valid, \
-priv_class_train, priv_class_valid = sklearn.model_selection.train_test_split(x, y, priv_class,
-                                                                              test_size=0.2, random_state=7)
+    with st.expander('Raw data'):
+        st.dataframe(data_df_display)
 
-prediction = st.selectbox('Prediction',
-                          ['Gold', 'KNN', 'AdaBoost', 'SVM'],
-                          index=0)
+    # privilege parameters
+    col1, col2, col3 = st.columns(3)
+    privilege_col = col1.selectbox('privilege column',
+                                   list(x_display.columns),
+                                   index=0)
+    condition_operator = col2.selectbox('operator',
+                                        condition_operators(data_df_display, privilege_col),
+                                        index=0)
 
-if prediction != 'Gold':
-    model = None
-    if prediction == 'KNN':
-        model = sklearn.neighbors.KNeighborsClassifier()
-    if prediction == 'SVM':
-        model = sklearn.svm.SVC()
-    if prediction == 'AdaBoost':
-        model = sklearn.ensemble.AdaBoostClassifier(n_estimators=100)
-    model.fit(x_train, y_train)
-    y_prediction = model.predict(x_valid)
-    y_prediction_all = model.predict(x)
-else:
-    y_prediction = y_valid.copy()
-    y_prediction_all = y.copy()
+    cond_possible_values = condition_values(data_df_display, privilege_col)
+    if len(cond_possible_values) > 0:
+        condition_value = col3.selectbox('value for privilege class',
+                                         cond_possible_values,
+                                         index=0)
+    else:
+        condition_value = col3.text_input('value for privilege class', value=data_df_display[privilege_col].iloc[0])
 
-fairness_mesured_set = st.selectbox('Fairness mesured set', ['All', 'Valid'], index=0)
+    condition_str = 'x' + str(condition_operator) + str(condition_value)
 
-data_df = None
-if fairness_mesured_set == 'All':
-    data_df = create_dataframe(x=x, y_gold=y, base_columns=x_display.columns, y_pred=y_prediction_all)
-    data_df['priv_class'] = priv_class
-if fairness_mesured_set == 'Valid':
-    data_df = create_dataframe(x=x_valid, y_gold=y_valid, base_columns=x_display.columns, y_pred=y_prediction)
-    data_df['priv_class'] = priv_class_valid
+    if condition_str is not None:
+        data_df_display = add_priv_class_col(data_df_display, privilege_col, condition_str)
 
-st.dataframe(data_df)
+    st.dataframe(data_df_display)
 
-gold_demographic_parity = FairnessUtils.demographic_parity(data_df, target='target')
-old_demographic_parity = FairnessUtils.demographic_parity(data_df)
-old_disparate_impact = FairnessUtils.disparate_impact_rate(data_df)
-old_equal_opportunity_succ = FairnessUtils.equal_opportunity_succes(data_df)
-old_avg_equalized_odds = FairnessUtils.average_equalized_odds(data_df)
-old_predictive_rate_parity = FairnessUtils.predictive_rate_parity(data_df)
+    encoded_data_df = encode_categories_to_num(data_df_display).copy()
 
-accuracy_before = sklearn.metrics.accuracy_score(y_true=data_df['target'].tolist(),
-                                                 y_pred=data_df['target_pred'].tolist())
+    x = encoded_data_df.loc[:, ~encoded_data_df.columns.isin(['target', 'priv_class'])].to_numpy()
+    priv_class = encoded_data_df['priv_class'].to_numpy()
+    y = encoded_data_df['target'].to_numpy()
+    x_train, x_valid, \
+    y_train, y_valid, \
+    priv_class_train, priv_class_valid = sklearn.model_selection.train_test_split(x, y, priv_class,
+                                                                                  test_size=0.2, random_state=7)
 
-st.subheader('Desired metrics')
+    prediction = st.selectbox('Prediction',
+                              ['Gold', 'KNN', 'AdaBoost', 'SVM'],
+                              index=0)
 
-wanted_demographic_parity = st.slider('Demographic Parity', min_value=-1.0, max_value=1.0, step=0.01,
-                                      value=old_demographic_parity)
+    if prediction != 'Gold':
+        model = None
+        if prediction == 'KNN':
+            model = sklearn.neighbors.KNeighborsClassifier()
+        if prediction == 'SVM':
+            model = sklearn.svm.SVC()
+        if prediction == 'AdaBoost':
+            model = sklearn.ensemble.AdaBoostClassifier(n_estimators=100)
+        model.fit(x_train, y_train)
+        y_prediction = model.predict(x_valid)
+        y_prediction_all = model.predict(x)
+    else:
+        y_prediction = y_valid.copy()
+        y_prediction_all = y.copy()
 
-correction_priority = st.slider('Priorize Non privilege', min_value=0.0, max_value=1.0, step=0.1,
-                                value=1.0)
+    fairness_mesured_set = st.selectbox('Fairness mesured set', ['All', 'Valid'], index=0)
 
-# wanted_equal_opportunity = st.slider('Equal Oportunity', min_value=-1.0, max_value=1.0, step=0.01,
-#                                      value=old_equal_opportunity)
+    data_df = None
+    if fairness_mesured_set == 'All':
+        data_df = create_dataframe(x=x, y_gold=y, base_columns=x_display.columns, y_pred=y_prediction_all)
+        data_df['priv_class'] = priv_class
+    if fairness_mesured_set == 'Valid':
+        data_df = create_dataframe(x=x_valid, y_gold=y_valid, base_columns=x_display.columns, y_pred=y_prediction)
+        data_df['priv_class'] = priv_class_valid
 
-st.subheader('Recalculate')
-with st.expander('Details'):
-    all_data_df = recalculate_from_demographic_parity_multiple(data_df)
+    st.dataframe(data_df)
+
+    gold_demographic_parity = FairnessUtils.demographic_parity(data_df, target='target')
+    old_demographic_parity = FairnessUtils.demographic_parity(data_df)
+    old_disparate_impact = FairnessUtils.disparate_impact_rate(data_df)
+    old_equal_opportunity_succ = FairnessUtils.equal_opportunity_succes(data_df)
+    old_avg_equalized_odds = FairnessUtils.average_equalized_odds(data_df)
+    old_predictive_rate_parity = FairnessUtils.predictive_rate_parity(data_df)
+
+    accuracy_before = sklearn.metrics.accuracy_score(y_true=data_df['target'].tolist(),
+                                                     y_pred=data_df['target_pred'].tolist())
+
+    st.subheader('Desired metrics')
+
+    wanted_demographic_parity = st.slider('Demographic Parity', min_value=-1.0, max_value=1.0, step=0.01,
+                                          value=old_demographic_parity)
+
+    correction_priority = st.slider('Priorize Non privilege', min_value=0.0, max_value=1.0, step=0.1,
+                                    value=1.0)
+
+    # wanted_equal_opportunity = st.slider('Equal Oportunity', min_value=-1.0, max_value=1.0, step=0.01,
+    #                                      value=old_equal_opportunity)
+
+    st.subheader('Recalculate')
+    with st.expander('Details'):
+        all_data_df = recalculate_from_demographic_parity_multiple(data_df)
 
 st.subheader('Confusion Matrices')
 matrices = conf_matrices(all_data_df[0])
