@@ -75,6 +75,21 @@ class FairnessUtils:
         return equal_opportunity
 
     @classmethod
+    def equal_opportunity_succes_ratio(cls, df):
+        # equal opportunity
+        # P(Y_hat=1 | Y=1, Priv_class = False) / P(Y_hat=1 | Y=1, Priv_class = True)
+        equal_opportunity = None
+        false_proba = FairnessUtils.calculate_cond_probability(df, [('target_pred', 1)],
+                                                               [('target', 1),
+                                                                ('priv_class', False)])
+        true_proba = FairnessUtils.calculate_cond_probability(df, [('target_pred', 1)],
+                                                              [('target', 1),
+                                                               ('priv_class', True)])
+        if true_proba != 0.0:
+            equal_opportunity = false_proba / true_proba
+        return equal_opportunity
+
+    @classmethod
     def average_equalized_odds(cls, df):
         # average equalized odds
         # Sum_i\inI [P(Y_hat=1 | Y=i, Priv_class = False) - P(Y_hat=1 | Y=i, Priv_class = True)] / |I|
@@ -106,4 +121,21 @@ class FairnessUtils:
                                                                   [('target_pred', 1),
                                                                    ('priv_class', True)])
             predictive_rate_parity = false_proba - true_proba
+        return predictive_rate_parity
+
+    @classmethod
+    def predictive_rate_parity_ratio(cls, df):
+        # predictive rate parity ratio
+        # P(Y=1|Y_hat=1, Priv_class=False) / P(Y=1|Y_hat=1, Priv_class=True)
+        predictive_rate_parity = None
+        if ((len(df[(df['target_pred'] == 1) & (df['priv_class'] == False)]) != 0) and
+                (len(df[(df['target_pred'] == 1) & (df['priv_class'] == True)]) != 0)):
+            false_proba = FairnessUtils.calculate_cond_probability(df, [('target', 1)],
+                                                                   [('target_pred', 1),
+                                                                    ('priv_class', False)])
+            true_proba = FairnessUtils.calculate_cond_probability(df, [('target', 1)],
+                                                                  [('target_pred', 1),
+                                                                   ('priv_class', True)])
+            if true_proba != 0.0:
+                predictive_rate_parity = false_proba / true_proba
         return predictive_rate_parity

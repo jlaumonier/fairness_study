@@ -150,18 +150,24 @@ def encode_categories_to_num(df):
     return df
 
 
-def load_data_set(name):
+def load_data_set(name, target_col=None):
     x_d, y_d = None, None
     if name == 'Adult':
         x_d, y_d = shap.datasets.adult(display=True)
     if name == 'CatDog':
         df = pd.read_csv('artificial.csv', sep=';')
-        x_d = df.loc[:, ~df.columns.isin(['target'])]
-        y_d = df['target']
+        x_d = df
+        if target_col:
+            x_d = df.loc[:, ~df.columns.isin([target_col])]
+            y_d = df[target_col]
     if name == 'Compas':
         df = pd.read_csv('compas-scores-two-years.csv', sep=',')
-        x_d = df.loc[:, ~df.columns.isin(['score_text'])]
-        y_d = df['score_text']
+        x_d = df
+        x_d['Score (Medium, High)'] = (x_d['score_text'] == 'Medium') | (x_d['score_text'] == 'High')
+        x_d['Score (Medium, High)'] = x_d['Score (Medium, High)'].astype(int)
+        if target_col:
+            x_d = df.loc[:, ~df.columns.isin([target_col])]
+            y_d = df[target_col]
     return x_d, y_d
 
 
@@ -195,6 +201,12 @@ def condition_values(df, column):
     return result
 
 
+def select_columns(l):
+    result = l
+    result.insert(0, '<select>')
+    return result
+
+
 st.markdown(f'''
     <style>
         section[data-testid="stSidebar"] .css-ng1t4o {{width: 60rem;}}
@@ -202,153 +214,201 @@ st.markdown(f'''
     </style>
 ''', unsafe_allow_html=True)
 
+can_calcul = False
+
 with st.sidebar:
     dataset = st.selectbox('Dataset',
                            ['Adult', 'CatDog', 'Compas'],
                            index=0)
-    x_display, y_display = load_data_set(dataset)
+    x_display, temp_y = load_data_set(dataset, None)
 
-    data_df_display = create_dataframe(x_display, y_display, x_display.columns)
-    labels = data_df_display['target'].unique()
-    # strip spaces
-    data_df_display = data_df_display.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+    target_col = st.selectbox('Target column', select_columns(list(x_display.columns)))
 
-    with st.expander('Raw data'):
+    if target_col != '<select>' or temp_y is not None:
+
+        x_display, y_display = load_data_set(dataset, target_col)
+
+        data_df_display = create_dataframe(x_display, y_display, x_display.columns, )
+        labels = data_df_display['target'].unique()
+        # strip spaces
+        data_df_display = data_df_display.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+
+        with st.expander('Raw data'):
+            st.dataframe(data_df_display)
+
+        # privilege parameters
+        col1, col2, col3 = st.columns(3)
+        privilege_col = col1.selectbox('privilege column',
+                                       list(x_display.columns),
+                                       index=0)
+        condition_operator = col2.selectbox('operator',
+                                            condition_operators(data_df_display, privilege_col),
+                                            index=0)
+
+        cond_possible_values = condition_values(data_df_display, privilege_col)
+        if len(cond_possible_values) > 0:
+            condition_value = col3.selectbox('value for privilege class',
+                                             cond_possible_values,
+                                             index=0)
+        else:
+            condition_value = col3.text_input('value for privilege class', value=data_df_display[privilege_col].iloc[0])
+
+        condition_str = 'x' + str(condition_operator) + str(condition_value)
+
+        if condition_str is not None:
+            data_df_display = add_priv_class_col(data_df_display, privilege_col, condition_str)
+
         st.dataframe(data_df_display)
 
-    # privilege parameters
-    col1, col2, col3 = st.columns(3)
-    privilege_col = col1.selectbox('privilege column',
-                                   list(x_display.columns),
-                                   index=0)
-    condition_operator = col2.selectbox('operator',
-                                        condition_operators(data_df_display, privilege_col),
-                                        index=0)
+        encoded_data_df = encode_categories_to_num(data_df_display).copy()
 
-    cond_possible_values = condition_values(data_df_display, privilege_col)
-    if len(cond_possible_values) > 0:
-        condition_value = col3.selectbox('value for privilege class',
-                                         cond_possible_values,
-                                         index=0)
-    else:
-        condition_value = col3.text_input('value for privilege class', value=data_df_display[privilege_col].iloc[0])
+        colp1, colp2 = st.columns(2)
+        prediction = colp1.selectbox('Prediction',
+                                     ['Gold', 'KNN', 'AdaBoost', 'SVM', 'Other column'],
+                                     index=0)
 
-    condition_str = 'x' + str(condition_operator) + str(condition_value)
+        target_pred_col = colp2.selectbox('Target prediction column',
+                                          select_columns(list(x_display.columns)))
 
-    if condition_str is not None:
-        data_df_display = add_priv_class_col(data_df_display, privilege_col, condition_str)
+        if prediction != 'Other column' or target_pred_col != '<select>':
 
-    st.dataframe(data_df_display)
+            x = encoded_data_df.loc[:, ~encoded_data_df.columns.isin(['target', 'priv_class'])].to_numpy()
+            priv_class = encoded_data_df['priv_class'].to_numpy()
+            y = encoded_data_df['target'].to_numpy()
+            if target_pred_col != '<select>':
+                y_pred_col = encoded_data_df[target_pred_col].to_numpy()
+                x_train, x_valid, \
+                y_train, y_valid, \
+                priv_class_train, priv_class_valid, \
+                pred_train, y_pred_valid = sklearn.model_selection.train_test_split(x, y, priv_class, y_pred_col,
+                                                                                    test_size=0.2, random_state=7)
+            else:
+                x_train, x_valid, \
+                y_train, y_valid, \
+                priv_class_train, priv_class_valid = sklearn.model_selection.train_test_split(x, y, priv_class,
+                                                                                              test_size=0.2,
+                                                                                              random_state=7)
 
-    encoded_data_df = encode_categories_to_num(data_df_display).copy()
+            if prediction not in ['Gold', 'Other column']:
+                model = None
+                if prediction == 'KNN':
+                    model = sklearn.neighbors.KNeighborsClassifier()
+                if prediction == 'SVM':
+                    model = sklearn.svm.SVC()
+                if prediction == 'AdaBoost':
+                    model = sklearn.ensemble.AdaBoostClassifier(n_estimators=100)
+                model.fit(x_train, y_train)
+                y_prediction = model.predict(x_valid)
+                y_prediction_all = model.predict(x)
+            else:
+                if prediction == 'Gold':
+                    y_prediction = y_valid.copy()
+                    y_prediction_all = y.copy()
+                else:
+                    y_prediction = y_pred_valid
+                    y_prediction_all = encoded_data_df[target_pred_col].to_numpy()
 
-    x = encoded_data_df.loc[:, ~encoded_data_df.columns.isin(['target', 'priv_class'])].to_numpy()
-    priv_class = encoded_data_df['priv_class'].to_numpy()
-    y = encoded_data_df['target'].to_numpy()
-    x_train, x_valid, \
-    y_train, y_valid, \
-    priv_class_train, priv_class_valid = sklearn.model_selection.train_test_split(x, y, priv_class,
-                                                                                  test_size=0.2, random_state=7)
+            fairness_mesured_set = st.selectbox('Fairness mesured set', ['All', 'Valid'], index=0)
 
-    prediction = st.selectbox('Prediction',
-                              ['Gold', 'KNN', 'AdaBoost', 'SVM'],
-                              index=0)
+            data_df = None
+            if fairness_mesured_set == 'All':
+                data_df = create_dataframe(x=x, y_gold=y, base_columns=x_display.columns, y_pred=y_prediction_all)
+                data_df['priv_class'] = priv_class
+            if fairness_mesured_set == 'Valid':
+                data_df = create_dataframe(x=x_valid, y_gold=y_valid, base_columns=x_display.columns,
+                                           y_pred=y_prediction)
+                data_df['priv_class'] = priv_class_valid
 
-    if prediction != 'Gold':
-        model = None
-        if prediction == 'KNN':
-            model = sklearn.neighbors.KNeighborsClassifier()
-        if prediction == 'SVM':
-            model = sklearn.svm.SVC()
-        if prediction == 'AdaBoost':
-            model = sklearn.ensemble.AdaBoostClassifier(n_estimators=100)
-        model.fit(x_train, y_train)
-        y_prediction = model.predict(x_valid)
-        y_prediction_all = model.predict(x)
-    else:
-        y_prediction = y_valid.copy()
-        y_prediction_all = y.copy()
+            value_positive_choice = st.selectbox('Positive decision',
+                                                 ['1 is positive decision', '0 is positive decision'])
 
-    fairness_mesured_set = st.selectbox('Fairness mesured set', ['All', 'Valid'], index=0)
+            if value_positive_choice == '0 is positive decision':
+                data_df['target'] = data_df['target'].replace({0.0: 1.0, 1.0: 0.0})
+                data_df['target_pred'] = data_df['target_pred'].replace({0.0: 1.0, 1.0: 0.0})
 
-    data_df = None
-    if fairness_mesured_set == 'All':
-        data_df = create_dataframe(x=x, y_gold=y, base_columns=x_display.columns, y_pred=y_prediction_all)
-        data_df['priv_class'] = priv_class
-    if fairness_mesured_set == 'Valid':
-        data_df = create_dataframe(x=x_valid, y_gold=y_valid, base_columns=x_display.columns, y_pred=y_prediction)
-        data_df['priv_class'] = priv_class_valid
+            st.dataframe(data_df)
 
-    st.dataframe(data_df)
+            gold_demographic_parity = FairnessUtils.demographic_parity(data_df, target='target')
+            old_demographic_parity = FairnessUtils.demographic_parity(data_df)
+            old_disparate_impact = FairnessUtils.disparate_impact_rate(data_df)
+            old_equal_opportunity_succ = FairnessUtils.equal_opportunity_succes(data_df)
+            old_equal_opportunity_succ_ratio = FairnessUtils.equal_opportunity_succes_ratio(data_df)
+            old_avg_equalized_odds = FairnessUtils.average_equalized_odds(data_df)
+            old_predictive_rate_parity = FairnessUtils.predictive_rate_parity(data_df)
+            old_predictive_rate_parity_ratio = FairnessUtils.predictive_rate_parity_ratio(data_df)
 
-    gold_demographic_parity = FairnessUtils.demographic_parity(data_df, target='target')
-    old_demographic_parity = FairnessUtils.demographic_parity(data_df)
-    old_disparate_impact = FairnessUtils.disparate_impact_rate(data_df)
-    old_equal_opportunity_succ = FairnessUtils.equal_opportunity_succes(data_df)
-    old_avg_equalized_odds = FairnessUtils.average_equalized_odds(data_df)
-    old_predictive_rate_parity = FairnessUtils.predictive_rate_parity(data_df)
+            accuracy_before = sklearn.metrics.accuracy_score(y_true=data_df['target'].tolist(),
+                                                             y_pred=data_df['target_pred'].tolist())
 
-    accuracy_before = sklearn.metrics.accuracy_score(y_true=data_df['target'].tolist(),
-                                                     y_pred=data_df['target_pred'].tolist())
+            st.subheader('Desired metrics')
 
-    st.subheader('Desired metrics')
+            wanted_demographic_parity = st.slider('Demographic Parity', min_value=-1.0, max_value=1.0, step=0.01,
+                                                  value=old_demographic_parity)
 
-    wanted_demographic_parity = st.slider('Demographic Parity', min_value=-1.0, max_value=1.0, step=0.01,
-                                          value=old_demographic_parity)
+            correction_priority = st.slider('Priorize Non privilege', min_value=0.0, max_value=1.0, step=0.1,
+                                            value=1.0)
 
-    correction_priority = st.slider('Priorize Non privilege', min_value=0.0, max_value=1.0, step=0.1,
-                                    value=1.0)
+            # wanted_equal_opportunity = st.slider('Equal Oportunity', min_value=-1.0, max_value=1.0, step=0.01,
+            #                                      value=old_equal_opportunity)
 
-    # wanted_equal_opportunity = st.slider('Equal Oportunity', min_value=-1.0, max_value=1.0, step=0.01,
-    #                                      value=old_equal_opportunity)
+            st.subheader('Recalculate')
+            with st.expander('Details'):
+                all_data_df = recalculate_from_demographic_parity_multiple(data_df)
 
-    st.subheader('Recalculate')
-    with st.expander('Details'):
-        all_data_df = recalculate_from_demographic_parity_multiple(data_df)
+            can_calcul = True
 
-st.subheader('Confusion Matrices')
-matrices = conf_matrices(all_data_df[0])
-with st.expander('All confusion matrix'):
-    disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[0], display_labels=labels)
-    disp.plot()
-    st.pyplot(disp.figure_)
-with st.expander('Priv True matrix'):
-    disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[1], display_labels=labels)
-    disp.plot()
-    st.pyplot(disp.figure_)
-with st.expander('Priv False matrix'):
-    disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[2], display_labels=labels)
-    disp.plot()
-    st.pyplot(disp.figure_)
+if can_calcul:
+    st.subheader('Confusion Matrices')
+    matrices = conf_matrices(all_data_df[0])
+    with st.expander('All confusion matrix'):
+        disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[0], display_labels=labels)
+        disp.plot()
+        st.pyplot(disp.figure_)
+    with st.expander('Priv True matrix'):
+        disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[1], display_labels=labels)
+        disp.plot()
+        st.pyplot(disp.figure_)
+    with st.expander('Priv False matrix'):
+        disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[2], display_labels=labels)
+        disp.plot()
+        st.pyplot(disp.figure_)
 
-new_demographic_parity = calculate_metrics_and_errors(all_data_df, FairnessUtils.demographic_parity)
-new_disparate_impact = calculate_metrics_and_errors(all_data_df, FairnessUtils.disparate_impact_rate)
-new_equal_opportunity_succ = calculate_metrics_and_errors(all_data_df, FairnessUtils.equal_opportunity_succes)
-new_avg_equalized_odds = calculate_metrics_and_errors(all_data_df, FairnessUtils.average_equalized_odds)
-new_predictive_rate_parity = calculate_metrics_and_errors(all_data_df, FairnessUtils.predictive_rate_parity)
-accuracy_after = calculate_metrics_and_errors(all_data_df, calculate_accuracy)
+    new_demographic_parity = calculate_metrics_and_errors(all_data_df, FairnessUtils.demographic_parity)
+    new_disparate_impact = calculate_metrics_and_errors(all_data_df, FairnessUtils.disparate_impact_rate)
+    new_equal_opportunity_succ = calculate_metrics_and_errors(all_data_df, FairnessUtils.equal_opportunity_succes)
+    new_equal_opportunity_succ_ratio = calculate_metrics_and_errors(all_data_df, FairnessUtils.equal_opportunity_succes_ratio)
+    new_avg_equalized_odds = calculate_metrics_and_errors(all_data_df, FairnessUtils.average_equalized_odds)
+    new_predictive_rate_parity = calculate_metrics_and_errors(all_data_df, FairnessUtils.predictive_rate_parity)
+    new_predictive_rate_parity_ratio = calculate_metrics_and_errors(all_data_df, FairnessUtils.predictive_rate_parity_ratio)
+    accuracy_after = calculate_metrics_and_errors(all_data_df, calculate_accuracy)
 
-data = [[accuracy_before, 1.0, accuracy_after[0], accuracy_after[2]],
-        [old_demographic_parity, wanted_demographic_parity, new_demographic_parity[0], new_demographic_parity[2]],
-        [old_equal_opportunity_succ, 0.0, new_equal_opportunity_succ[0], new_equal_opportunity_succ[2]],
-        [old_avg_equalized_odds, 0.0, new_avg_equalized_odds[0], new_avg_equalized_odds[2]],
-        [old_predictive_rate_parity, 0.0, new_predictive_rate_parity[0], new_predictive_rate_parity[2]]]
+    data = [[accuracy_before, 1.0, accuracy_after[0], accuracy_after[2]],
+            [old_demographic_parity, wanted_demographic_parity, new_demographic_parity[0], new_demographic_parity[2]],
+            [old_equal_opportunity_succ, 0.0, new_equal_opportunity_succ[0], new_equal_opportunity_succ[2]],
+            [old_avg_equalized_odds, 0.0, new_avg_equalized_odds[0], new_avg_equalized_odds[2]],
+            [old_predictive_rate_parity, 0.0, new_predictive_rate_parity[0], new_predictive_rate_parity[2]]]
 
-fig_res = create_figure(data=data, metrics=['Accuracy',
-                                            'Demographic parity',
-                                            'Equal Opportunity (succes)',
-                                            'Avg Equalized Odds',
-                                            'Predictive rate parity'])
 
-data = [[old_disparate_impact, 1.0, new_disparate_impact[0], new_disparate_impact[2]]]
-fig_ratio = create_figure(data=data, metrics=['Disparate Impact'])
+    fig_res = create_figure(data=data, metrics=['Accuracy',
+                                                'Demographic parity',
+                                                'Equal Opportunity (succes)',
+                                                'Avg Equalized Odds',
+                                                'Predictive rate parity'])
 
-st.header('Results')
-st.write('Demographic parity on gold :', gold_demographic_parity)
-st.write('Demographic parity :', new_demographic_parity)
-st.write('Disparate impact:', new_disparate_impact)
-st.write('Equal Opportunity (succes):', new_equal_opportunity_succ)
-st.write('Avg Equalized Odds:', new_avg_equalized_odds)
-st.write('Predictive rate parity', new_predictive_rate_parity)
-st.plotly_chart(fig_res, use_container_width=True)
-st.plotly_chart(fig_ratio, use_container_width=True)
+    data = [[old_disparate_impact, 1.0, new_disparate_impact[0], new_disparate_impact[2]],
+            [old_equal_opportunity_succ_ratio, 1.0, new_equal_opportunity_succ_ratio[0], new_equal_opportunity_succ_ratio[2]],
+            [old_predictive_rate_parity_ratio, 1.0, new_predictive_rate_parity_ratio[0], new_predictive_rate_parity_ratio[2]]]
+    fig_ratio = create_figure(data=data, metrics=['Disparate Impact',
+                                                  'Equal Opportunity ratio (succes)',
+                                                  'Predictive rate parity ratio'])
+
+    st.header('Results')
+    st.write('Demographic parity on gold :', gold_demographic_parity)
+    st.write('Demographic parity :', new_demographic_parity)
+    st.write('Disparate impact:', new_disparate_impact)
+    st.write('Equal Opportunity (succes):', new_equal_opportunity_succ)
+    st.write('Avg Equalized Odds:', new_avg_equalized_odds)
+    st.write('Predictive rate parity', new_predictive_rate_parity)
+    st.write('Predictive rate parity ratio', new_predictive_rate_parity_ratio)
+    st.plotly_chart(fig_res, use_container_width=True)
+    st.plotly_chart(fig_ratio, use_container_width=True)
