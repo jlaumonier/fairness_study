@@ -75,6 +75,34 @@ class FairnessUtils:
         return equal_opportunity
 
     @classmethod
+    def predictive_equality(cls, df):
+        # predictive_equality
+        # P(Y_hat=1 | Y=0, Priv_class = False) - P(Y_hat=1 | Y=0, Priv_class = True)
+        false_proba = FairnessUtils.calculate_cond_probability(df, [('target_pred', 1)],
+                                                               [('target', 0),
+                                                                ('priv_class', False)])
+        true_proba = FairnessUtils.calculate_cond_probability(df, [('target_pred', 1)],
+                                                              [('target', 0),
+                                                               ('priv_class', True)])
+        equal_opportunity = false_proba - true_proba
+        return equal_opportunity
+
+    @classmethod
+    def predictive_equality_ratio(cls, df):
+        # predictive_equality
+        # P(Y_hat=1 | Y=0, Priv_class = False) - P(Y_hat=1 | Y=0, Priv_class = True)
+        predictive_equality = None
+        false_proba = FairnessUtils.calculate_cond_probability(df, [('target_pred', 1)],
+                                                               [('target', 0),
+                                                                ('priv_class', False)])
+        true_proba = FairnessUtils.calculate_cond_probability(df, [('target_pred', 1)],
+                                                              [('target', 0),
+                                                               ('priv_class', True)])
+        if true_proba != 0.0:
+            predictive_equality = false_proba / true_proba
+        return predictive_equality
+
+    @classmethod
     def equal_opportunity_succes_ratio(cls, df):
         # equal opportunity
         # P(Y_hat=1 | Y=1, Priv_class = False) / P(Y_hat=1 | Y=1, Priv_class = True)

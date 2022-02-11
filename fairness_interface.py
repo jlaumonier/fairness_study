@@ -147,6 +147,9 @@ def encode_categories_to_num(df):
     category_columns = list(df.select_dtypes(include=['object']).columns)
     oe = sklearn.preprocessing.OrdinalEncoder()
     df[category_columns] = oe.fit_transform(df[category_columns])
+    df = df.apply(pd.to_numeric, args=('coerce',))
+    df = df.fillna(0.0)
+    print(df)
     return df
 
 
@@ -205,6 +208,22 @@ def select_columns(l):
     result = l
     result.insert(0, '<select>')
     return result
+
+
+def calculate_all_ml_metrics(conf_matrix):
+    r = {'tp': conf_matrix[1][1],
+         'fp': conf_matrix[0][1],
+         'tn': conf_matrix[0][0],
+         'fn': conf_matrix[1][0]}
+    r['ppv (precision)'] = r['tp'] / (r['tp'] + r['fp'])
+    r['tpr (rappel)'] = r['tp'] / (r['tp'] + r['fn'])
+    r['fpr'] = r['fp'] / (r['fp'] + r['tn'])
+    return r
+
+
+def print_metrics(metrics):
+    for k, v in metrics.items():
+        st.write(str(k) + ' = ' + str(v))
 
 
 st.markdown(f'''
@@ -336,6 +355,8 @@ with st.sidebar:
             old_avg_equalized_odds = FairnessUtils.average_equalized_odds(data_df)
             old_predictive_rate_parity = FairnessUtils.predictive_rate_parity(data_df)
             old_predictive_rate_parity_ratio = FairnessUtils.predictive_rate_parity_ratio(data_df)
+            old_predictive_equality = FairnessUtils.predictive_equality(data_df)
+            old_predictive_equality_ratio = FairnessUtils.predictive_equality_ratio(data_df)
 
             accuracy_before = sklearn.metrics.accuracy_score(y_true=data_df['target'].tolist(),
                                                              y_pred=data_df['target_pred'].tolist())
@@ -364,43 +385,62 @@ if can_calcul:
         disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[0], display_labels=labels)
         disp.plot()
         st.pyplot(disp.figure_)
+        m = calculate_all_ml_metrics(matrices[0])
+        print_metrics(m)
     with st.expander('Priv True matrix'):
         disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[1], display_labels=labels)
         disp.plot()
         st.pyplot(disp.figure_)
+        m = calculate_all_ml_metrics(matrices[1])
+        print_metrics(m)
     with st.expander('Priv False matrix'):
         disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=matrices[2], display_labels=labels)
         disp.plot()
         st.pyplot(disp.figure_)
+        m = calculate_all_ml_metrics(matrices[2])
+        print_metrics(m)
 
     new_demographic_parity = calculate_metrics_and_errors(all_data_df, FairnessUtils.demographic_parity)
     new_disparate_impact = calculate_metrics_and_errors(all_data_df, FairnessUtils.disparate_impact_rate)
     new_equal_opportunity_succ = calculate_metrics_and_errors(all_data_df, FairnessUtils.equal_opportunity_succes)
-    new_equal_opportunity_succ_ratio = calculate_metrics_and_errors(all_data_df, FairnessUtils.equal_opportunity_succes_ratio)
+    new_equal_opportunity_succ_ratio = calculate_metrics_and_errors(all_data_df,
+                                                                    FairnessUtils.equal_opportunity_succes_ratio)
     new_avg_equalized_odds = calculate_metrics_and_errors(all_data_df, FairnessUtils.average_equalized_odds)
     new_predictive_rate_parity = calculate_metrics_and_errors(all_data_df, FairnessUtils.predictive_rate_parity)
-    new_predictive_rate_parity_ratio = calculate_metrics_and_errors(all_data_df, FairnessUtils.predictive_rate_parity_ratio)
+    new_predictive_rate_parity_ratio = calculate_metrics_and_errors(all_data_df,
+                                                                    FairnessUtils.predictive_rate_parity_ratio)
+    new_predictive_equality = calculate_metrics_and_errors(all_data_df,
+                                                           FairnessUtils.predictive_equality)
+    new_predictive_equality_ratio = calculate_metrics_and_errors(all_data_df,
+                                                                 FairnessUtils.predictive_equality_ratio)
     accuracy_after = calculate_metrics_and_errors(all_data_df, calculate_accuracy)
 
     data = [[accuracy_before, 1.0, accuracy_after[0], accuracy_after[2]],
             [old_demographic_parity, wanted_demographic_parity, new_demographic_parity[0], new_demographic_parity[2]],
             [old_equal_opportunity_succ, 0.0, new_equal_opportunity_succ[0], new_equal_opportunity_succ[2]],
             [old_avg_equalized_odds, 0.0, new_avg_equalized_odds[0], new_avg_equalized_odds[2]],
-            [old_predictive_rate_parity, 0.0, new_predictive_rate_parity[0], new_predictive_rate_parity[2]]]
-
+            [old_predictive_rate_parity, 0.0, new_predictive_rate_parity[0], new_predictive_rate_parity[2]],
+            [old_predictive_equality, 0.0, new_predictive_equality[0], new_predictive_equality[2]]]
 
     fig_res = create_figure(data=data, metrics=['Accuracy',
                                                 'Demographic parity',
                                                 'Equal Opportunity (succes)',
                                                 'Avg Equalized Odds',
-                                                'Predictive rate parity'])
+                                                'Predictive rate parity',
+                                                'Predictive equality'])
 
     data = [[old_disparate_impact, 1.0, new_disparate_impact[0], new_disparate_impact[2]],
-            [old_equal_opportunity_succ_ratio, 1.0, new_equal_opportunity_succ_ratio[0], new_equal_opportunity_succ_ratio[2]],
-            [old_predictive_rate_parity_ratio, 1.0, new_predictive_rate_parity_ratio[0], new_predictive_rate_parity_ratio[2]]]
+            [old_equal_opportunity_succ_ratio, 1.0, new_equal_opportunity_succ_ratio[0],
+             new_equal_opportunity_succ_ratio[2]],
+            [old_predictive_rate_parity_ratio, 1.0, new_predictive_rate_parity_ratio[0],
+             new_predictive_rate_parity_ratio[2]],
+            [old_predictive_equality_ratio, 1.0, new_predictive_equality_ratio[0],
+             new_predictive_equality_ratio[2]]
+            ]
     fig_ratio = create_figure(data=data, metrics=['Disparate Impact',
                                                   'Equal Opportunity ratio (succes)',
-                                                  'Predictive rate parity ratio'])
+                                                  'Predictive rate parity ratio',
+                                                  'Predictive equality ratio'])
 
     st.header('Results')
     st.write('Demographic parity on gold :', gold_demographic_parity)
@@ -410,5 +450,7 @@ if can_calcul:
     st.write('Avg Equalized Odds:', new_avg_equalized_odds)
     st.write('Predictive rate parity', new_predictive_rate_parity)
     st.write('Predictive rate parity ratio', new_predictive_rate_parity_ratio)
+    st.write('Predictive equality', new_predictive_equality)
+    st.write('Predictive equality ratio', new_predictive_equality_ratio)
     st.plotly_chart(fig_res, use_container_width=True)
     st.plotly_chart(fig_ratio, use_container_width=True)
